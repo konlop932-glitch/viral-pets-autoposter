@@ -7,6 +7,9 @@ on:
     - cron: '0 17 * * *'
   workflow_dispatch: # Allows manual trigger anytime from GitHub UI
 
+permissions:
+  contents: write
+
 jobs:
   post-viral-video:
     runs-on: ubuntu-latest
@@ -37,5 +40,9 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add posted_ids.json
-          git commit -m "Auto: Update posted_ids.json [skip ci]" || echo "No changes"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes in posted_ids.json"
+          else
+            git commit -m "Auto: Update posted_ids.json [skip ci]"
+            git push
+          fi
