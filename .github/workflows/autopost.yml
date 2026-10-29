@@ -47,7 +47,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes in posted_ids.json"
           else
-            git commit -m "Auto: Update posted_ids.json [skip ci]"
+            git commit -m "Auto: Update posted_ids.json"
             git pull --rebase origin main || true
             git push
           fi
