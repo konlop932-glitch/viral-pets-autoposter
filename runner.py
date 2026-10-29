@@ -129,6 +129,14 @@ def fetch_and_download_top_video():
                                         f.write(chunk)
 
                             if TEMP_VIDEO_PATH.exists() and TEMP_VIDEO_PATH.stat().st_size > 50000:
+                                # Ensure video has an audio track so TikTok & Reels never reject it
+                                with open(TEMP_VIDEO_PATH, "rb") as f_check:
+                                    header_sample = f_check.read(min(TEMP_VIDEO_PATH.stat().st_size, 5000000))
+                                    if b"soun" not in header_sample:
+                                        print(f"⚠️ Clip {vid_id} has no audio stream — skipping to ensure platform audio requirements.")
+                                        TEMP_VIDEO_PATH.unlink()
+                                        continue
+
                                 return {
                                     "id": vid_id,
                                     "title": v["title"],
