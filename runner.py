@@ -293,21 +293,23 @@ def publish_meta(video_info, caption):
         print(f"❌ Meta publishing error: {e}")
         return False
 
-def publish_tiktok(video_info, caption):
-    """Publishes video to TikTok via Buffer API, Webhook gateway, or tracks scheduled queue."""
+def publish_buffer(video_info, caption):
+    """Publishes video to connected channels (TikTok, Instagram Reels) via Buffer API."""
     buffer_token = os.environ.get("BUFFER_ACCESS_TOKEN")
     webhook_url = os.environ.get("TIKTOK_WEBHOOK_URL")
 
-    # 1. Official Buffer TikTok API (100% Free Tier, zero maintenance)
+    overall_success = False
+
+    # 1. Official Buffer API (100% Free Tier, zero maintenance)
     if buffer_token:
-        print("Dispatching video to TikTok via Buffer API...")
+        print("Dispatching video to Buffer channels (TikTok & Instagram)...")
         try:
-            mp4_url = video_info.get("mp4_url")
+            cdn_url = f"https://raw.githubusercontent.com/konlop932-glitch/viral-pets-autoposter/main/current_short.mp4?v={video_info['id']}"
             headers = {
                 "Authorization": f"Bearer {buffer_token}",
                 "Content-Type": "application/json"
             }
-            # Query organization and TikTok channel
+            # Query organization and channels
             org_query = """
             query GetOrgs {
               account {
@@ -325,25 +327,23 @@ def publish_tiktok(video_info, caption):
                 return False
             org_id = orgs[0]["id"]
 
-            ch_query = """
-            query GetChannels($input: ChannelsInput!) {
-              channels(input: $input) {
+            ch_query = f"""
+            query {{
+              channels(input: {{ organizationId: "{org_id}" }}) {{
                 id
                 name
                 service
-              }
-            }
+              }}
+            }}
             """
-            r_ch = requests.post("https://api.buffer.com", headers=headers, json={"query": ch_query, "variables": {"input": {"organizationId": org_id}}}, timeout=15)
+            r_ch = requests.post("https://api.buffer.com", headers=headers, json={"query": ch_query}, timeout=15)
             r_ch.raise_for_status()
             channels = r_ch.json().get("data", {}).get("channels", [])
-            tt_ch = next((c for c in channels if c.get("service") == "tiktok"), None)
-            if not tt_ch:
-                print("ℹ️ TikTok channel not yet connected in Buffer. Connected channels: " + ", ".join(c.get("service") for c in channels))
+            
+            target_channels = [c for c in channels if c.get("service") in ("tiktok", "instagram")]
+            if not target_channels:
+                print("ℹ️ No TikTok or Instagram channel found in Buffer. Connected channels: " + ", ".join(c.get("service") for c in channels))
                 return False
-
-            channel_id = tt_ch["id"]
-            print(f"✅ Found Buffer TikTok channel: {tt_ch.get('name')} ({channel_id})")
 
             create_mutation = """
             mutation CreatePost($input: CreatePostInput!) {
@@ -370,78 +370,53 @@ def publish_tiktok(video_info, caption):
               }
             }
             """
-            # Deliver via GitHub Raw Fastly CDN to bypass Imgur 429 datacenter IP rate limits
-            cdn_url = f"https://raw.githubusercontent.com/konlop932-glitch/viral-pets-autoposter/main/current_short.mp4?v={video_info['id']}"
-            post_vars = {
-                "input": {
-                    "channelId": channel_id,
-                    "text": caption,
-                    "schedulingType": "automatic",
-                    "mode": "shareNow",
-                    "needsApproval": False,
-                    "assets": [
-                        {
-                            "video": {
-                                "url": cdn_url
-                            }
-                        }
-                    ]
-                }
-            }
-            r_post = requests.post("https://api.buffer.com", headers=headers, json={"query": create_mutation, "variables": post_vars}, timeout=30)
-            if r_post.status_code == 200:
-                p_data = r_post.json()
-                res = p_data.get("data", {}).get("createPost", {})
-                if res.get("__typename") == "PostActionSuccess":
-                    post_id = res.get("post", {}).get("id")
-                    print(f"🎉 TikTok post created in Buffer! ID: {post_id}. Verifying video ingest...")
-                    for _ in range(6):
-                        time.sleep(5)
-                        try:
-                            chk_query = """
-                            query GetPost($input: PostInput!) {
-                              post(input: $input) {
-                                id
-                                status
-                                error {
-                                  message
+
+            for ch in target_channels:
+                ch_id = ch["id"]
+                service = ch.get("service")
+                ch_name = ch.get("name")
+                print(f"Publishing to Buffer {service.title()} channel: {ch_name} ({ch_id})...")
+
+                post_vars = {
+                    "input": {
+                        "channelId": ch_id,
+                        "text": caption,
+                        "schedulingType": "automatic",
+                        "mode": "shareNow",
+                        "needsApproval": False,
+                        "assets": [
+                            {
+                                "video": {
+                                    "url": cdn_url
                                 }
-                              }
                             }
-                            """
-                            r_chk = requests.post("https://api.buffer.com", headers=headers, json={"query": chk_query, "variables": {"input": {"id": post_id}}}, timeout=15)
-                            if r_chk.status_code == 200:
-                                pst = r_chk.json().get("data", {}).get("post", {})
-                                st = pst.get("status")
-                                err = pst.get("error")
-                                if st in ["scheduled", "sent", "publishing"]:
-                                    print(f"🎉 Buffer TikTok ingest verified! Status: {st}")
-                                    return True
-                                elif st == "error" or err:
-                                    err_msg = err.get("message") if err else "Buffer processing failed"
-                                    print(f"❌ Buffer processing error: {err_msg}")
-                                    return False
-                        except Exception as ce:
-                            print(f"Notice polling Buffer status: {ce}")
-                    print("🎉 TikTok video sent to Buffer successfully!")
-                    return True
-                # Fallback to addToQueue if shareNow is busy
-                post_vars["input"]["mode"] = "addToQueue"
-                r_fallback = requests.post("https://api.buffer.com", headers=headers, json={"query": create_mutation, "variables": post_vars}, timeout=30)
-                if r_fallback.status_code == 200:
-                    fb_res = r_fallback.json().get("data", {}).get("createPost", {})
-                    if fb_res.get("__typename") == "PostActionSuccess":
-                        post_id = fb_res.get("post", {}).get("id")
-                        print(f"🎉 TikTok video added to Buffer queue! ID: {post_id}")
-                        return True
-                print(f"❌ Buffer mutation error ({res.get('__typename')}): {res.get('message')}")
-                return False
-            else:
-                print(f"❌ Buffer HTTP error ({r_post.status_code}): {r_post.text}")
-                return False
+                        ]
+                    }
+                }
+
+                if service == "instagram":
+                    post_vars["input"]["metadata"] = {
+                        "instagram": {
+                            "type": "reel",
+                            "shouldShareToFeed": True
+                        }
+                    }
+
+                r_post = requests.post("https://api.buffer.com", headers=headers, json={"query": create_mutation, "variables": post_vars}, timeout=30)
+                if r_post.status_code == 200:
+                    p_data = r_post.json()
+                    res = p_data.get("data", {}).get("createPost", {})
+                    if res.get("__typename") == "PostActionSuccess":
+                        post_id = res.get("post", {}).get("id")
+                        print(f"🎉 {service.title()} post created in Buffer! ID: {post_id}.")
+                        overall_success = True
+                    else:
+                        print(f"❌ Buffer {service} mutation error ({res.get('__typename')}): {res.get('message')}")
+                else:
+                    print(f"❌ Buffer {service} HTTP error ({r_post.status_code}): {r_post.text}")
+
         except Exception as e:
-            print(f"❌ Buffer TikTok error: {e}")
-            return False
+            print(f"❌ Buffer dispatch error: {e}")
 
     # 2. Make.com / n8n Webhook Dispatcher
     if webhook_url:
@@ -459,15 +434,13 @@ def publish_tiktok(video_info, caption):
                 resp = requests.post(webhook_url, data=payload, files=files, timeout=60)
                 if resp.status_code in (200, 201):
                     print("🎉 TikTok video sent to automation webhook successfully!")
-                    return True
+                    overall_success = True
                 else:
                     print(f"❌ TikTok webhook error ({resp.status_code}): {resp.text}")
-                    return False
         except Exception as e:
             print(f"❌ TikTok webhook error: {e}")
-            return False
 
-    # 3. Fallback: scheduled cloud buffer active
+    return overall_success
     print("ℹ️ TikTok Buffer/Webhook not configured yet — scheduled cloud buffer active in TikTok Studio (14 videos queued through Nov 4).")
     return True
 
@@ -495,11 +468,11 @@ def main():
     # 1. Publish to YouTube Shorts
     yt_success = publish_youtube(video, caption)
 
-    # 2. Publish to Facebook Page & Instagram Reels
-    meta_success = publish_meta(video, caption)
+    # 2. Publish to Facebook Page
+    fb_success = publish_meta(video, caption)
 
-    # 3. Publish to TikTok
-    tt_success = publish_tiktok(video, caption)
+    # 3. Publish to TikTok & Instagram Reels via Buffer
+    buffer_success = publish_buffer(video, caption)
 
     # 4. Clean up local downloaded video
     if TEMP_VIDEO_PATH.exists():
@@ -508,7 +481,7 @@ def main():
     # 5. Commit to history
     history.append(video["id"])
     save_history(history)
-    print(f"✅ Video {video['id']} added to history. YouTube: {yt_success}, Meta: {meta_success}, TikTok: {tt_success}")
+    print(f"✅ Video {video['id']} added to history. YouTube: {yt_success}, Facebook: {fb_success}, Buffer (TikTok/IG): {buffer_success}")
 
 if __name__ == "__main__":
     main()
